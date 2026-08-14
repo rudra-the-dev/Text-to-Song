@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sur — AI Song Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0D0B10;
+    --panel:#17141C;
+    --panel-border:#2A2530;
+    --accent:#E8A33D;
+    --accent-2:#3FA88F;
+    --text:#F2ECE4;
+    --muted:#948C99;
+    --danger:#D9694F;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:'Inter',sans-serif;
+    min-height:100vh;
+    padding:32px 20px 80px;
+  }
+  .wrap{max-width:760px;margin:0 auto;}
+
+  header{margin-bottom:28px;}
+  .eyebrow{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--accent-2);
+    margin-bottom:8px;
+  }
+  h1{
+    font-family:'Fraunces',serif;
+    font-weight:600;
+    font-size:clamp(32px,6vw,44px);
+    margin:0 0 8px;
+    letter-spacing:-0.01em;
+  }
+  header p{color:var(--muted);margin:0;font-size:15px;line-height:1.5;max-width:52ch;}
+
+  .console{
+    background:var(--panel);
+    border:1px solid var(--panel-border);
+    border-radius:14px;
+    padding:24px;
+    margin-bottom:24px;
+  }
+
+  label{
+    display:block;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    color:var(--muted);
+    margin-bottom:8px;
+  }
+  .field{margin-bottom:18px;}
+  textarea, input[type="number"]{
+    width:100%;
+    background:#0F0D13;
+    border:1px solid var(--panel-border);
+    border-radius:8px;
+    color:var(--text);
+    font-family:'Inter',sans-serif;
+    font-size:14.5px;
+    padding:12px 14px;
+    resize:vertical;
+    outline:none;
+    transition:border-color .15s;
+  }
+  textarea:focus, input:focus{border-color:var(--accent-2);}
+  textarea#prompt{min-height:70px;}
+  textarea#lyrics{min-height:120px;}
+
+  .row{display:flex;gap:16px;flex-wrap:wrap;}
+  .row > div{flex:1;min-width:140px;}
+
+  .lora-toggle{display:flex;gap:8px;}
+  .lora-btn{
+    flex:1;
+    background:#0F0D13;
+    border:1px solid var(--panel-border);
+    color:var(--muted);
+    font-family:'JetBrains Mono',monospace;
+    font-size:12.5px;
+    padding:10px 12px;
+    border-radius:8px;
+    cursor:pointer;
+    text-align:center;
+    transition:all .15s;
+  }
+  .lora-btn.active{
+    border-color:var(--accent);
+    color:var(--accent);
+    background:rgba(232,163,61,0.08);
+  }
+
+  button#generate{
+    width:100%;
+    background:var(--accent);
+    color:#1A1206;
+    border:none;
+    border-radius:8px;
+    padding:14px;
+    font-family:'JetBrains Mono',monospace;
+    font-size:13px;
+    letter-spacing:0.06em;
+    text-transform:uppercase;
+    font-weight:500;
+    cursor:pointer;
+    margin-top:6px;
+    transition:transform .1s, opacity .15s;
+  }
+  button#generate:hover{transform:translateY(-1px);}
+  button#generate:disabled{opacity:0.5;cursor:not-allowed;transform:none;}
+
+  /* --- signature element: console visualizer --- */
+  .visualizer{
+    display:none;
+    align-items:flex-end;
+    justify-content:center;
+    gap:3px;
+    height:48px;
+    margin:18px 0 4px;
+  }
+  .visualizer.on{display:flex;}
+  .visualizer span{
+    width:4px;
+    background:linear-gradient(to top, var(--accent-2), var(--accent));
+    border-radius:2px;
+    animation:bounce 1.1s ease-in-out infinite;
+  }
+  .visualizer span:nth-child(2n){animation-duration:0.9s;}
+  .visualizer span:nth-child(3n){animation-duration:1.3s;}
+  .visualizer span:nth-child(5n){animation-duration:0.75s;}
+  @keyframes bounce{
+    0%,100%{height:6px;}
+    50%{height:44px;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .visualizer span{animation:none;height:20px;}
+  }
+
+  .status-line{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    color:var(--muted);
+    text-align:center;
+    min-height:16px;
+  }
+  .status-line.error{color:var(--danger);}
+
+  .result{
+    display:none;
+    background:var(--panel);
+    border:1px solid var(--panel-border);
+    border-radius:14px;
+    padding:20px 24px;
+  }
+  .result.on{display:block;}
+  .result audio{width:100%;margin-top:12px;}
+  .result-title{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    color:var(--accent-2);
+  }
+
+  footer{
+    margin-top:32px;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    color:var(--muted);
+    text-align:center;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Sur // Local Song Console</div>
+    <h1>Describe it. Sur plays it.</h1>
+    <p>Write a style prompt, add lyrics if you have them, and generate a full track with ACE-Step running on your own GPU.</p>
+  </header>
+
+  <div class="console">
+    <div class="field">
+      <label for="prompt">Style prompt</label>
+      <textarea id="prompt" placeholder="e.g. upbeat Bollywood pop, female vocals, dhol and strings, 100 BPM"></textarea>
+    </div>
+
+    <div class="field">
+      <label for="lyrics">Lyrics (optional — leave blank for instrumental)</label>
+      <textarea id="lyrics" placeholder="[verse]&#10;tera saath hi manzil hai..."></textarea>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Vocal model</label>
+        <div class="lora-toggle">
+          <div class="lora-btn active" data-lora="none">Base</div>
+          <div class="lora-btn" data-lora="hindi">Hindi LoRA</div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="duration">Duration (sec)</label>
+        <input type="number" id="duration" value="60" min="10" max="240">
+      </div>
+    </div>
+
+    <button id="generate">Generate track</button>
+
+    <div class="visualizer" id="visualizer">
+      <!-- bars injected by JS -->
+    </div>
+    <div class="status-line" id="statusLine"></div>
+  </div>
+
+  <div class="result" id="result">
+    <div class="result-title">Output</div>
+    <audio id="player" controls></audio>
+  </div>
+
+  <footer>ACE-Step backend &middot; select "Hindi LoRA" only after training one (see README)</footer>
+</div>
+
+<script>
+const API = ""; // same-origin; change if backend runs on a different host/port
+
+const bars = document.getElementById('visualizer');
+for (let i = 0; i < 28; i++) {
+  const s = document.createElement('span');
+  bars.appendChild(s);
+}
+
+let selectedLora = "none";
+document.querySelectorAll('.lora-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.lora-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedLora = btn.dataset.lora;
+  });
+});
+
+const generateBtn = document.getElementById('generate');
+const statusLine = document.getElementById('statusLine');
+const resultBox = document.getElementById('result');
+const player = document.getElementById('player');
+
+generateBtn.addEventListener('click', async () => {
+  const prompt = document.getElementById('prompt').value.trim();
+  const lyrics = document.getElementById('lyrics').value.trim();
+  const duration = parseInt(document.getElementById('duration').value, 10) || 60;
+
+  if (!prompt) {
+    statusLine.textContent = "Add a style prompt first.";
+    statusLine.classList.add('error');
+    return;
+  }
+
+  generateBtn.disabled = true;
+  bars.classList.add('on');
+  resultBox.classList.remove('on');
+  statusLine.classList.remove('error');
+  statusLine.textContent = "Queuing job…";
+
+  try {
+    const res = await fetch(`${API}/api/generate`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        prompt,
+        lyrics: lyrics || null,
+        lora: selectedLora,
+        duration_seconds: duration
+      })
+    });
+    if (!res.ok) throw new Error(`Request failed (${res.status})`);
+    const job = await res.json();
+    await pollJob(job.id);
+  } catch (err) {
+    statusLine.textContent = err.message || "Something went wrong.";
+    statusLine.classList.add('error');
+    bars.classList.remove('on');
+    generateBtn.disabled = false;
+  }
+});
+
+async function pollJob(jobId) {
+  statusLine.textContent = "Generating…";
+  while (true) {
+    await new Promise(r => setTimeout(r, 2500));
+    const res = await fetch(`${API}/api/jobs/${jobId}`);
+    const job = await res.json();
+    if (job.status === "done") {
+      statusLine.textContent = "Done.";
+      bars.classList.remove('on');
+      generateBtn.disabled = false;
+      player.src = `${API}/api/jobs/${jobId}/audio`;
+      resultBox.classList.add('on');
+      return;
+    }
+    if (job.status === "failed") {
+      statusLine.textContent = job.error || "Generation failed.";
+      statusLine.classList.add('error');
+      bars.classList.remove('on');
+      generateBtn.disabled = false;
+      return;
+    }
+    statusLine.textContent = job.status === "running" ? "Generating…" : "Queued…";
+  }
+}
+</script>
+</body>
+</html>
