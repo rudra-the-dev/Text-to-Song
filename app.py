@@ -1,0 +1,113 @@
+"""
+Main FastAPI application.
+
+Exposes a small job-queue API in front of an ACE-Step inference server
+(running locally or on a rented GPU pod). The frontend polls /jobs/{id}
+until status == "done", then plays /jobs/{id}/audio.
+"""
+import uuid
+from datetime import datetime
+from typing import Optional, Literal
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from ace_step_service import AceStepService, AceStepError
+
+app = FastAPI(title="Hindi Music Generator")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten this once you have a real domain
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- in-memory job store -----------------------------------------------
+# Fine for a solo-dev prototype with one server process. If you outgrow
+# this (multiple workers, need for persistence/retries) swap this dict
+# for Redis + an RQ/Celery worker; the API shape below doesn't change.
+JOBS: dict[str, dict] = {}
+
+ace_step = AceStepService()
+
+
+class GenerateRequest(BaseModel):
+    prompt: str = Field(..., description="Style/genre/mood description, e.g. 'upbeat Bollywood pop, female vocals, dhol and strings'")
+    lyrics: Optional[str] = Field(None, description="Lyrics text. Leave blank for instrumental.")
+    lora: Literal["none", "hindi"] = "none"
+    duration_seconds: int = Field(60, ge=10, le=240)
+    seed: Optional[int] = None
+
+
+class JobStatus(BaseModel):
+    id: str
+    status: Literal["queued", "running", "done", "failed"]
+    created_at: str
+    error: Optional[str] = None
+
+
+@app.post("/api/generate", response_model=JobStatus)
+def generate(req: GenerateRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "created_at": datetime.utcnow().isoformat(),
+        "error": None,
+        "audio_path": None,
+        "request": req.model_dump(),
+    }
+    background_tasks.add_task(_run_job, job_id, req)
+    return JobStatus(**{k: JOBS[job_id][k] for k in ("id", "status", "created_at", "error")})
+
+
+def _run_job(job_id: str, req: GenerateRequest):
+    JOBS[job_id]["status"] = "running"
+    try:
+        audio_path = ace_step.generate_song(
+            prompt=req.prompt,
+            lyrics=req.lyrics,
+            lora=req.lora,
+            duration_seconds=req.duration_seconds,
+            seed=req.seed,
+            job_id=job_id,
+        )
+        JOBS[job_id]["audio_path"] = audio_path
+        JOBS[job_id]["status"] = "done"
+    except AceStepError as e:
+        JOBS[job_id]["status"] = "failed"
+        JOBS[job_id]["error"] = str(e)
+    except Exception as e:  # noqa: BLE001 - surface unexpected errors to the UI too
+        JOBS[job_id]["status"] = "failed"
+        JOBS[job_id]["error"] = f"Unexpected error: {e}"
+
+
+@app.get("/api/jobs/{job_id}", response_model=JobStatus)
+def get_job(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return JobStatus(**{k: job[k] for k in ("id", "status", "created_at", "error")})
+
+
+@app.get("/api/jobs/{job_id}/audio")
+def get_job_audio(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] != "done" or not job["audio_path"]:
+        raise HTTPException(409, "Job not finished yet")
+    return FileResponse(job["audio_path"], media_type="audio/wav")
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "ace_step_reachable": ace_step.ping()}
+
+
+# Serve the frontend
+app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
