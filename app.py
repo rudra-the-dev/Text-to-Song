@@ -114,7 +114,18 @@ def get_job_audio(job_id: str):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "ace_step_reachable": ace_step.ping()}
+    # Kept fast and dependency-free on purpose -- this is what Render's own
+    # health check hits to decide if the deploy succeeded. Pinging ACE-Step
+    # here would make deploys fail/hang whenever the GPU is scaled to zero
+    # (Lightning/Modal cold start), which has nothing to do with whether
+    # this backend itself is up. Use /api/ace-step-status to check that
+    # separately, on demand.
+    return {"ok": True}
+
+
+@app.get("/api/ace-step-status")
+def ace_step_status():
+    return {"ace_step_reachable": ace_step.ping()}
 
 
 # Serve the frontend — resolved relative to this file, not the process's
