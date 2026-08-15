@@ -13,6 +13,7 @@ Set these in a .env file or your shell before starting the backend:
                               leave unset until you've trained one)
 """
 import os
+import re
 import time
 import uuid
 
@@ -24,9 +25,38 @@ OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./generated_audio")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Devanagari unicode block — catches lyrics actually written in Hindi script.
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+
 
 class AceStepError(Exception):
     pass
+
+
+def infer_language(prompt: str, lyrics: str | None) -> str:
+    """
+    Decide "hindi" vs "english" (base) from what the user actually wrote.
+
+    Priority:
+      1. Lyrics written in Devanagari script -> hindi, no ambiguity.
+      2. The prompt explicitly says "hindi" (or "bollywood", a strong
+         proxy for it) -> hindi.
+      3. The prompt explicitly says "english" -> english.
+      4. Default: english/base, since that's what the un-augmented model
+         is actually good at (see README on Hindi vocal quality).
+    """
+    text = f"{prompt} {lyrics or ''}"
+
+    if _DEVANAGARI_RE.search(text):
+        return "hindi"
+
+    lowered = text.lower()
+    if "hindi" in lowered or "bollywood" in lowered:
+        return "hindi"
+    if "english" in lowered:
+        return "english"
+
+    return "english"
 
 
 class AceStepService:
@@ -41,14 +71,21 @@ class AceStepService:
         self,
         prompt: str,
         lyrics: str | None,
-        lora: str,
         duration_seconds: int,
         seed: int | None,
         job_id: str,
-    ) -> str:
+        language_override: str | None = None,
+    ) -> tuple[str, str]:
         """
         Calls ACE-Step's /generate endpoint and saves the resulting audio
-        to disk, returning the local file path.
+        to disk. Returns (file_path, language_used) so the caller/UI can
+        show which model actually generated the track.
+
+        Language routing: the Hindi LoRA is only used when the prompt/lyrics
+        are actually in Hindi (Devanagari script) or explicitly say
+        "Hindi"/"Bollywood". Everything else — including no signal either
+        way — falls back to base ACE-Step. Pass language_override to skip
+        detection (e.g. a user-facing manual override, if you add one later).
 
         NOTE: the exact payload shape depends on which ACE-Step API build
         you deploy (their api_server.py vs a custom FastAPI wrapper vs
@@ -56,6 +93,8 @@ class AceStepService:
         whatever you stood up on the GPU side — this is the one place
         you'll likely need to tweak after following their README.
         """
+        language = language_override or infer_language(prompt, lyrics)
+
         payload = {
             "prompt": prompt,
             "lyrics": lyrics or "",
@@ -65,11 +104,13 @@ class AceStepService:
             "guidance_scale": 15.0,
         }
 
-        if lora == "hindi":
+        if language == "hindi":
             if not ACE_STEP_HINDI_LORA_PATH:
                 raise AceStepError(
-                    "Hindi LoRA not configured yet. Train one (see README, Phase 2) "
-                    "and set ACE_STEP_HINDI_LORA_PATH."
+                    "This prompt looks like it wants Hindi, but no Hindi LoRA is "
+                    "configured yet. Train one (see README, Phase 2) and set "
+                    "ACE_STEP_HINDI_LORA_PATH — or rephrase the prompt in English "
+                    "to use base ACE-Step for now."
                 )
             payload["lora_name_or_path"] = ACE_STEP_HINDI_LORA_PATH
 
@@ -85,4 +126,4 @@ class AceStepService:
         with open(out_path, "wb") as f:
             f.write(resp.content)
 
-        return out_path
+        return out_path, language
