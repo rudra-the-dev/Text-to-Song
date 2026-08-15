@@ -84,24 +84,24 @@
   .row{display:flex;gap:16px;flex-wrap:wrap;}
   .row > div{flex:1;min-width:140px;}
 
-  .lora-toggle{display:flex;gap:8px;}
-  .lora-btn{
-    flex:1;
-    background:#0F0D13;
-    border:1px solid var(--panel-border);
+  .lang-note{
+    font-size:13px;
     color:var(--muted);
-    font-family:'JetBrains Mono',monospace;
-    font-size:12.5px;
-    padding:10px 12px;
-    border-radius:8px;
-    cursor:pointer;
-    text-align:center;
-    transition:all .15s;
+    line-height:1.5;
+    padding-top:2px;
   }
-  .lora-btn.active{
-    border-color:var(--accent);
+  .lang-tag{
+    display:inline-block;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    letter-spacing:0.06em;
+    text-transform:uppercase;
     color:var(--accent);
+    border:1px solid var(--panel-border);
     background:rgba(232,163,61,0.08);
+    padding:3px 8px;
+    border-radius:6px;
+    margin-left:8px;
   }
 
   button#generate{
@@ -205,12 +205,9 @@
     </div>
 
     <div class="row">
-      <div class="field">
+      <div class="field" style="flex:2;">
         <label>Vocal model</label>
-        <div class="lora-toggle">
-          <div class="lora-btn active" data-lora="none">Base</div>
-          <div class="lora-btn" data-lora="hindi">Hindi LoRA</div>
-        </div>
+        <div class="lang-note">Detected automatically — write in Hindi (or say "Hindi"/"Bollywood") to use the Hindi LoRA, otherwise base ACE-Step handles it.</div>
       </div>
       <div class="field">
         <label for="duration">Duration (sec)</label>
@@ -243,15 +240,6 @@ for (let i = 0; i < 28; i++) {
   bars.appendChild(s);
 }
 
-let selectedLora = "none";
-document.querySelectorAll('.lora-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.lora-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    selectedLora = btn.dataset.lora;
-  });
-});
-
 const generateBtn = document.getElementById('generate');
 const statusLine = document.getElementById('statusLine');
 const resultBox = document.getElementById('result');
@@ -281,7 +269,6 @@ generateBtn.addEventListener('click', async () => {
       body: JSON.stringify({
         prompt,
         lyrics: lyrics || null,
-        lora: selectedLora,
         duration_seconds: duration
       })
     });
@@ -303,7 +290,8 @@ async function pollJob(jobId) {
     const res = await fetch(`${API}/api/jobs/${jobId}`);
     const job = await res.json();
     if (job.status === "done") {
-      statusLine.textContent = "Done.";
+      const langLabel = job.language_used === "hindi" ? "Hindi LoRA" : "Base (English)";
+      statusLine.innerHTML = `Done <span class="lang-tag">${langLabel}</span>`;
       bars.classList.remove('on');
       generateBtn.disabled = false;
       player.src = `${API}/api/jobs/${jobId}/audio`;
