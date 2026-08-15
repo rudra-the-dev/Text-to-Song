@@ -5,8 +5,10 @@ Exposes a small job-queue API in front of an ACE-Step inference server
 (running locally or on a rented GPU pod). The frontend polls /jobs/{id}
 until status == "done", then plays /jobs/{id}/audio.
 """
+import os
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Literal
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -115,5 +117,9 @@ def health():
     return {"ok": True, "ace_step_reachable": ace_step.ping()}
 
 
-# Serve the frontend
-app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
+# Serve the frontend — resolved relative to this file, not the process's
+# cwd. Assumes index.html sits in the same folder as app.py (flat repo
+# layout). If you later split into backend/frontend folders, change this
+# to parent.parent / "frontend" instead.
+FRONTEND_DIR = Path(__file__).resolve().parent
+app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
