@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: sur-backend
+    env: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: ACE_STEP_BASE_URL
+        sync: false
+      - key: ACE_STEP_HINDI_LORA_PATH
+        sync: false
