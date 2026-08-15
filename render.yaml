@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: sur-backend
+    name: sur
     env: python
     plan: free
     
