@@ -26,9 +26,9 @@ python -m uvicorn app:app --reload --port 8000
 ### Step 3: Open in Browser
 Navigate to: **http://localhost:8000**
 
-## What's Configured
+## NOT Configured
 
-✅ **ACE_STEP_BASE_URL** = `https://swan-resale-fester.ngrok-free.dev/`
+ **ACE_STEP_BASE_URL**
 - This tells your backend where your GPU model server is running
 - The backend will call this URL to generate audio
 
