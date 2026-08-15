@@ -38,9 +38,12 @@ ace_step = AceStepService()
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., description="Style/genre/mood description, e.g. 'upbeat Bollywood pop, female vocals, dhol and strings'")
     lyrics: Optional[str] = Field(None, description="Lyrics text. Leave blank for instrumental.")
-    lora: Literal["none", "hindi"] = "none"
     duration_seconds: int = Field(60, ge=10, le=240)
     seed: Optional[int] = None
+    # No manual LoRA picker: language is detected from the prompt/lyrics
+    # (see ace_step_service.infer_language). This lets a caller force it
+    # for testing without exposing a toggle in the UI.
+    language_override: Optional[Literal["hindi", "english"]] = None
 
 
 class JobStatus(BaseModel):
@@ -48,6 +51,7 @@ class JobStatus(BaseModel):
     status: Literal["queued", "running", "done", "failed"]
     created_at: str
     error: Optional[str] = None
+    language_used: Optional[str] = None
 
 
 @app.post("/api/generate", response_model=JobStatus)
@@ -59,24 +63,26 @@ def generate(req: GenerateRequest, background_tasks: BackgroundTasks):
         "created_at": datetime.utcnow().isoformat(),
         "error": None,
         "audio_path": None,
+        "language_used": None,
         "request": req.model_dump(),
     }
     background_tasks.add_task(_run_job, job_id, req)
-    return JobStatus(**{k: JOBS[job_id][k] for k in ("id", "status", "created_at", "error")})
+    return JobStatus(**{k: JOBS[job_id][k] for k in ("id", "status", "created_at", "error", "language_used")})
 
 
 def _run_job(job_id: str, req: GenerateRequest):
     JOBS[job_id]["status"] = "running"
     try:
-        audio_path = ace_step.generate_song(
+        audio_path, language_used = ace_step.generate_song(
             prompt=req.prompt,
             lyrics=req.lyrics,
-            lora=req.lora,
             duration_seconds=req.duration_seconds,
             seed=req.seed,
             job_id=job_id,
+            language_override=req.language_override,
         )
         JOBS[job_id]["audio_path"] = audio_path
+        JOBS[job_id]["language_used"] = language_used
         JOBS[job_id]["status"] = "done"
     except AceStepError as e:
         JOBS[job_id]["status"] = "failed"
@@ -91,7 +97,7 @@ def get_job(job_id: str):
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
-    return JobStatus(**{k: job[k] for k in ("id", "status", "created_at", "error")})
+    return JobStatus(**{k: job[k] for k in ("id", "status", "created_at", "error", "language_used")})
 
 
 @app.get("/api/jobs/{job_id}/audio")
