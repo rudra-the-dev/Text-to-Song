@@ -2,12 +2,7 @@
 
 Your ACE-Step inference server is configured and ready to go!
 
-## Current Configuration
 
-```
-🔗 ACE-Step GPU Server: https://swan-resale-fester.ngrok-free.dev/
-📝 Configuration: .env (auto-created)
-```
 
 ## How to Run
 
