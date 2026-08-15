@@ -20,10 +20,21 @@ import uuid
 import requests
 
 ACE_STEP_BASE_URL = os.environ.get("ACE_STEP_BASE_URL", "http://127.0.0.1:8019")
+ACE_STEP_API_KEY = os.environ.get("ACE_STEP_API_KEY")  # required for Lightning AI's Autoscale deployments
 ACE_STEP_HINDI_LORA_PATH = os.environ.get("ACE_STEP_HINDI_LORA_PATH")  # None until Phase 2
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./generated_audio")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+def _auth_headers() -> dict:
+    """Bearer auth header, if ACE_STEP_API_KEY is set. Lightning AI's
+    Autoscale deployments require this on every request; a self-hosted
+    ACE-Step (Colab/Modal) generally won't need it, so this is a no-op
+    when the env var is unset."""
+    if ACE_STEP_API_KEY:
+        return {"Authorization": f"Bearer {ACE_STEP_API_KEY}"}
+    return {}
 
 # Devanagari unicode block — catches lyrics actually written in Hindi script.
 _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
@@ -62,7 +73,7 @@ def infer_language(prompt: str, lyrics: str | None) -> str:
 class AceStepService:
     def ping(self) -> bool:
         try:
-            r = requests.get(f"{ACE_STEP_BASE_URL}/health", timeout=5)
+            r = requests.get(f"{ACE_STEP_BASE_URL}/health", headers=_auth_headers(), timeout=5)
             return r.ok
         except requests.RequestException:
             return False
@@ -115,7 +126,12 @@ class AceStepService:
             payload["lora_name_or_path"] = ACE_STEP_HINDI_LORA_PATH
 
         try:
-            resp = requests.post(f"{ACE_STEP_BASE_URL}/generate", json=payload, timeout=600)
+            resp = requests.post(
+                f"{ACE_STEP_BASE_URL}/generate",
+                json=payload,
+                headers=_auth_headers(),
+                timeout=600,
+            )
             resp.raise_for_status()
         except requests.RequestException as e:
             raise AceStepError(f"Could not reach ACE-Step server at {ACE_STEP_BASE_URL}: {e}") from e
