@@ -285,10 +285,34 @@ generateBtn.addEventListener('click', async () => {
 
 async function pollJob(jobId) {
   statusLine.textContent = "Generating…";
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 8; // ~8 x a few sec backoff before actually giving up
+
   while (true) {
     await new Promise(r => setTimeout(r, 2500));
-    const res = await fetch(`${API}/api/jobs/${jobId}`);
-    const job = await res.json();
+
+    let job;
+    try {
+      const res = await fetch(`${API}/api/jobs/${jobId}`);
+      if (!res.ok) throw new Error(`Status check failed (${res.status})`);
+      job = await res.json();
+      consecutiveFailures = 0; // reset on any successful round-trip
+    } catch (err) {
+      // Transient network blips are common on mobile (tab backgrounded,
+      // brief signal drop) during a multi-minute generation -- don't let
+      // a single failed poll kill the whole flow, just retry.
+      consecutiveFailures++;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        statusLine.textContent = "Lost connection while checking status. The job may still be running server-side — try refreshing in a bit.";
+        statusLine.classList.add('error');
+        bars.classList.remove('on');
+        generateBtn.disabled = false;
+        return;
+      }
+      statusLine.textContent = "Connection hiccup, retrying…";
+      continue;
+    }
+
     if (job.status === "done") {
       const langLabel = job.language_used === "hindi" ? "Hindi LoRA" : "Base (English)";
       statusLine.innerHTML = `Done <span class="lang-tag">${langLabel}</span>`;
@@ -305,7 +329,7 @@ async function pollJob(jobId) {
       generateBtn.disabled = false;
       return;
     }
-    statusLine.textContent = job.status === "running" ? "Generating…" : "Queued…";
+    statusLine.textContent = job.status === "running" ? "Generating… (first run after idle can take several minutes while the model loads)" : "Queued…";
   }
 }
 </script>
