@@ -152,13 +152,21 @@ class AceStepService:
         task_id = data["task_id"]
         audio_path_on_server = self._wait_for_result(task_id)
 
-        # Download the actual audio bytes from the server's file endpoint.
-        download_url = f"{ACE_STEP_BASE_URL}{audio_path_on_server}"
+        # The server may return an already-absolute URL, or a path that
+        # needs the base URL prepended -- handle both rather than assuming.
+        if audio_path_on_server.startswith("http://") or audio_path_on_server.startswith("https://"):
+            download_url = audio_path_on_server
+        else:
+            download_url = f"{ACE_STEP_BASE_URL}{audio_path_on_server if audio_path_on_server.startswith('/') else '/' + audio_path_on_server}"
+
         try:
             audio_resp = requests.get(download_url, headers=_auth_headers(), timeout=120)
             audio_resp.raise_for_status()
         except requests.RequestException as e:
-            raise AceStepError(f"Job finished but downloading the result failed: {e}") from e
+            raise AceStepError(
+                f"Job finished but downloading the result failed. "
+                f"Tried URL: {download_url} (server gave path: {audio_path_on_server!r}). Error: {e}"
+            ) from e
 
         out_path = os.path.join(OUTPUT_DIR, f"{job_id}.wav")
         with open(out_path, "wb") as f:
@@ -192,7 +200,16 @@ class AceStepService:
             if status == 1:  # succeeded
                 result = json.loads(entry["result"])
                 item = result[0] if isinstance(result, list) else result
-                return item["file"]
+                # Docs say the field is "file", but be defensive about
+                # naming since we've already been burned once by
+                # docs-vs-reality drift on this API.
+                file_path = item.get("file") or item.get("path") or item.get("audio_path") or item.get("url")
+                if not file_path:
+                    raise AceStepError(
+                        f"Generation succeeded but no file path was found in the result. "
+                        f"Raw result item: {json.dumps(item)}"
+                    )
+                return file_path
 
             if status == 2:  # failed
                 result = entry.get("result")
