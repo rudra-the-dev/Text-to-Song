@@ -134,6 +134,7 @@ class AceStepService:
             "inference_steps": 8,       # turbo model default per ACE-Step's docs
             "guidance_scale": 7.0,      # only affects base model, harmless default otherwise
             "use_random_seed": seed is None,
+            "batch_size": 1,            # the API defaults to 2 -- we only want one song per job
         }
         if seed is not None:
             payload["seed"] = seed
@@ -199,15 +200,19 @@ class AceStepService:
 
             if status == 1:  # succeeded
                 result = json.loads(entry["result"])
-                item = result[0] if isinstance(result, list) else result
-                # Docs say the field is "file", but be defensive about
-                # naming since we've already been burned once by
-                # docs-vs-reality drift on this API.
-                file_path = item.get("file") or item.get("path") or item.get("audio_path") or item.get("url")
+                items = result if isinstance(result, list) else [result]
+                # In case batching still produces multiple entries, take the
+                # first one that actually has a non-empty file path.
+                file_path = None
+                for item in items:
+                    candidate = item.get("file") or item.get("path") or item.get("audio_path") or item.get("url")
+                    if candidate:
+                        file_path = candidate
+                        break
                 if not file_path:
                     raise AceStepError(
                         f"Generation succeeded but no file path was found in the result. "
-                        f"Raw result item: {json.dumps(item)}"
+                        f"Raw result: {json.dumps(items)}"
                     )
                 return file_path
 
