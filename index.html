@@ -286,10 +286,19 @@ generateBtn.addEventListener('click', async () => {
 async function pollJob(jobId) {
   statusLine.textContent = "Generating…";
   let consecutiveFailures = 0;
-  const MAX_CONSECUTIVE_FAILURES = 8; // ~8 x a few sec backoff before actually giving up
+  const MAX_CONSECUTIVE_FAILURES = 40; // with backoff below, tolerates several minutes of dropped connectivity
+  const BASE_DELAY_MS = 2500;
+  const MAX_DELAY_MS = 20000;
 
   while (true) {
-    await new Promise(r => setTimeout(r, 2500));
+    // Backoff grows with consecutive failures so a long mobile-background
+    // gap (screen lock, app switch) doesn't burn through retries in
+    // seconds -- it just polls less often, for longer, until it either
+    // reconnects or genuinely gives up.
+    const delay = consecutiveFailures === 0
+      ? BASE_DELAY_MS
+      : Math.min(BASE_DELAY_MS * Math.pow(1.5, consecutiveFailures), MAX_DELAY_MS);
+    await new Promise(r => setTimeout(r, delay));
 
     let job;
     try {
@@ -300,7 +309,7 @@ async function pollJob(jobId) {
     } catch (err) {
       // Transient network blips are common on mobile (tab backgrounded,
       // brief signal drop) during a multi-minute generation -- don't let
-      // a single failed poll kill the whole flow, just retry.
+      // a single failed poll kill the whole flow, just retry with backoff.
       consecutiveFailures++;
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         statusLine.textContent = "Lost connection while checking status. The job may still be running server-side — try refreshing in a bit.";
