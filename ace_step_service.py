@@ -1,47 +1,67 @@
 """
-Thin client for the ACE-Step inference server.
+Thin client for the ACE-Step 1.5 REST API.
 
-ACE-Step (https://github.com/ace-step/ACE-Step-1.5) ships its own REST API
-you run alongside the model (`python api_server.py` in their repo, or via
-their Gradio UI with the API enabled). This module just calls that server
-over HTTP so your GPU can live anywhere: your own machine, a RunPod pod,
-etc. Point ACE_STEP_BASE_URL at wherever it's running.
+This is written against ACE-Step's own documented API (docs/en/API.md in
+their repo, https://github.com/ace-step/ACE-Step-1.5), not guessed. The
+real flow is async and three calls, not one:
 
-Set these in a .env file or your shell before starting the backend:
-  ACE_STEP_BASE_URL   e.g. http://127.0.0.1:8019  or  https://xxxx.runpod.net
-  ACE_STEP_HINDI_LORA_PATH   path/name of your trained Hindi LoRA (phase 2;
-                              leave unset until you've trained one)
+  1. POST /release_task   -> submit a job, get back a task_id
+  2. POST /query_result    -> poll with that task_id until status is
+                               1 (succeeded) or 2 (failed)
+  3. GET  /v1/audio?path=... -> download the actual audio bytes, using
+                               the "file" path from the query_result payload
+
+Every response is wrapped: {"data": ..., "code": 200, "error": null, ...}.
+Inside query_result's data, "result" is itself a JSON *string* that needs
+a second json.loads() -- easy to miss.
+
+Env vars:
+  ACE_STEP_BASE_URL       e.g. https://<your-deployment-url>
+  ACE_STEP_API_KEY        sent as `Authorization: Bearer <key>` -- required
+                           by some hosts (e.g. Lightning AI Autoscale),
+                           harmless to leave unset for others
+  ACE_STEP_HINDI_LORA_PATH  name/path of your trained Hindi LoRA (Phase 2;
+                             leave unset until you've trained one)
 """
+import json
 import os
 import re
 import time
-import uuid
 
 import requests
 
-ACE_STEP_BASE_URL = os.environ.get("ACE_STEP_BASE_URL", "http://127.0.0.1:8019")
-ACE_STEP_API_KEY = os.environ.get("ACE_STEP_API_KEY")  # required for Lightning AI's Autoscale deployments
-ACE_STEP_HINDI_LORA_PATH = os.environ.get("ACE_STEP_HINDI_LORA_PATH")  # None until Phase 2
+ACE_STEP_BASE_URL = os.environ.get("ACE_STEP_BASE_URL", "http://127.0.0.1:8001")
+ACE_STEP_API_KEY = os.environ.get("ACE_STEP_API_KEY")
+ACE_STEP_HINDI_LORA_PATH = os.environ.get("ACE_STEP_HINDI_LORA_PATH")
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./generated_audio")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+POLL_INTERVAL_SECONDS = 5
+MAX_WAIT_SECONDS = 600  # matches the server's own documented max duration
 
-def _auth_headers() -> dict:
-    """Bearer auth header, if ACE_STEP_API_KEY is set. Lightning AI's
-    Autoscale deployments require this on every request; a self-hosted
-    ACE-Step (Colab/Modal) generally won't need it, so this is a no-op
-    when the env var is unset."""
-    if ACE_STEP_API_KEY:
-        return {"Authorization": f"Bearer {ACE_STEP_API_KEY}"}
-    return {}
-
-# Devanagari unicode block — catches lyrics actually written in Hindi script.
+# Devanagari unicode block -- catches lyrics actually written in Hindi script.
 _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 
 
 class AceStepError(Exception):
     pass
+
+
+def _auth_headers() -> dict:
+    if ACE_STEP_API_KEY:
+        return {"Authorization": f"Bearer {ACE_STEP_API_KEY}"}
+    return {}
+
+
+def _unwrap(resp: requests.Response) -> dict:
+    """Every ACE-Step response is {"data": ..., "code": 200, "error": null, ...}.
+    Raise on non-200 `code` or a transport-level error status."""
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("code") != 200:
+        raise AceStepError(body.get("error") or f"ACE-Step returned code {body.get('code')}")
+    return body["data"]
 
 
 def infer_language(prompt: str, lyrics: str | None) -> str:
@@ -88,32 +108,14 @@ class AceStepService:
         language_override: str | None = None,
     ) -> tuple[str, str]:
         """
-        Calls ACE-Step's /generate endpoint and saves the resulting audio
-        to disk. Returns (file_path, language_used) so the caller/UI can
-        show which model actually generated the track.
+        Submits a generation job, polls until it's done, downloads the
+        result. Returns (file_path, language_used).
 
         Language routing: the Hindi LoRA is only used when the prompt/lyrics
         are actually in Hindi (Devanagari script) or explicitly say
-        "Hindi"/"Bollywood". Everything else — including no signal either
-        way — falls back to base ACE-Step. Pass language_override to skip
-        detection (e.g. a user-facing manual override, if you add one later).
-
-        NOTE: the exact payload shape depends on which ACE-Step API build
-        you deploy (their api_server.py vs a custom FastAPI wrapper vs
-        Gradio's /run/predict). Adjust the `payload` dict below to match
-        whatever you stood up on the GPU side — this is the one place
-        you'll likely need to tweak after following their README.
+        "Hindi"/"Bollywood". Everything else falls back to base ACE-Step.
         """
         language = language_override or infer_language(prompt, lyrics)
-
-        payload = {
-            "prompt": prompt,
-            "lyrics": lyrics or "",
-            "audio_duration": duration_seconds,
-            "seed": seed if seed is not None else -1,
-            "infer_step": 27,
-            "guidance_scale": 15.0,
-        }
 
         if language == "hindi":
             if not ACE_STEP_HINDI_LORA_PATH:
@@ -123,23 +125,99 @@ class AceStepService:
                     "ACE_STEP_HINDI_LORA_PATH — or rephrase the prompt in English "
                     "to use base ACE-Step for now."
                 )
-            payload["lora_name_or_path"] = ACE_STEP_HINDI_LORA_PATH
+            self._ensure_hindi_lora_active()
+
+        payload = {
+            "prompt": prompt,
+            "lyrics": lyrics or "",
+            "audio_duration": duration_seconds,
+            "inference_steps": 8,       # turbo model default per ACE-Step's docs
+            "guidance_scale": 7.0,      # only affects base model, harmless default otherwise
+            "use_random_seed": seed is None,
+        }
+        if seed is not None:
+            payload["seed"] = seed
 
         try:
             resp = requests.post(
-                f"{ACE_STEP_BASE_URL}/generate",
+                f"{ACE_STEP_BASE_URL}/release_task",
                 json=payload,
                 headers=_auth_headers(),
-                timeout=600,
+                timeout=30,  # this call just enqueues the job, should be fast
             )
-            resp.raise_for_status()
+            data = _unwrap(resp)
         except requests.RequestException as e:
             raise AceStepError(f"Could not reach ACE-Step server at {ACE_STEP_BASE_URL}: {e}") from e
 
-        # Assumes the server returns raw audio bytes. If your deployment
-        # instead returns a JSON with a URL or base64 payload, adjust here.
+        task_id = data["task_id"]
+        audio_path_on_server = self._wait_for_result(task_id)
+
+        # Download the actual audio bytes from the server's file endpoint.
+        download_url = f"{ACE_STEP_BASE_URL}{audio_path_on_server}"
+        try:
+            audio_resp = requests.get(download_url, headers=_auth_headers(), timeout=120)
+            audio_resp.raise_for_status()
+        except requests.RequestException as e:
+            raise AceStepError(f"Job finished but downloading the result failed: {e}") from e
+
         out_path = os.path.join(OUTPUT_DIR, f"{job_id}.wav")
         with open(out_path, "wb") as f:
-            f.write(resp.content)
+            f.write(audio_resp.content)
 
         return out_path, language
+
+    def _wait_for_result(self, task_id: str) -> str:
+        """Polls /query_result until the task succeeds or fails. Returns the
+        server-side file path (e.g. "/v1/audio?path=...") on success."""
+        deadline = time.monotonic() + MAX_WAIT_SECONDS
+
+        while time.monotonic() < deadline:
+            time.sleep(POLL_INTERVAL_SECONDS)
+            try:
+                resp = requests.post(
+                    f"{ACE_STEP_BASE_URL}/query_result",
+                    json={"task_id_list": [task_id]},
+                    headers=_auth_headers(),
+                    timeout=30,
+                )
+                data = _unwrap(resp)
+            except requests.RequestException as e:
+                # Transient poll failure -- don't give up on a single blip,
+                # just try again next cycle (bounded by the overall deadline).
+                continue
+
+            entry = data[0]
+            status = entry.get("status")
+
+            if status == 1:  # succeeded
+                result = json.loads(entry["result"])
+                item = result[0] if isinstance(result, list) else result
+                return item["file"]
+
+            if status == 2:  # failed
+                result = entry.get("result")
+                raise AceStepError(f"ACE-Step generation failed: {result}")
+
+            # status 0 -- still queued/running, keep polling
+
+        raise AceStepError(f"Timed out after {MAX_WAIT_SECONDS}s waiting for generation to finish.")
+
+    def _ensure_hindi_lora_active(self):
+        """Loads and enables the Hindi LoRA via ACE-Step's stateful LoRA
+        endpoints. Only called when Phase 2 is actually set up
+        (ACE_STEP_HINDI_LORA_PATH configured)."""
+        try:
+            requests.post(
+                f"{ACE_STEP_BASE_URL}/v1/lora/load",
+                json={"lora_name_or_path": ACE_STEP_HINDI_LORA_PATH},
+                headers=_auth_headers(),
+                timeout=60,
+            ).raise_for_status()
+            requests.post(
+                f"{ACE_STEP_BASE_URL}/v1/lora/toggle",
+                json={"enabled": True},
+                headers=_auth_headers(),
+                timeout=30,
+            ).raise_for_status()
+        except requests.RequestException as e:
+            raise AceStepError(f"Could not activate the Hindi LoRA: {e}") from e
